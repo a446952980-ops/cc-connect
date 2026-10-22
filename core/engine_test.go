@@ -3469,7 +3469,9 @@ func TestHandleMessage_AutoResetOnIdle_RotatesToNewSession(t *testing.T) {
 	for {
 		active := e.sessions.GetOrCreateActive(key)
 		sent := p.getSent()
-		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 2 {
+		// The auto-reset notice is terminal-only now; the only platform
+		// output is the new session's actual reply.
+		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 1 {
 			break
 		}
 		select {
@@ -3506,9 +3508,8 @@ func TestHandleMessage_AutoResetOnIdle_RotatesToNewSession(t *testing.T) {
 	}
 
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
-		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
-	}
+	// The "Session auto-reset" notice is terminal-only now (notice policy);
+	// the platform only sees the new session's actual reply.
 	if got := sent[len(sent)-1]; got != "fresh reply" {
 		t.Fatalf("final reply = %q, want fresh reply", got)
 	}
@@ -3610,7 +3611,9 @@ func TestHandleMessage_AutoResetOnIdle_FiresWhenHeartbeatBumpedUpdatedAt(t *test
 	for {
 		active := e.sessions.GetOrCreateActive(key)
 		sent := p.getSent()
-		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 2 {
+		// The auto-reset notice is terminal-only now; the platform only sees
+		// the new session's actual reply.
+		if active.ID != old.ID && len(active.GetHistory(0)) >= 2 && len(sent) >= 1 {
 			break
 		}
 		select {
@@ -3626,8 +3629,8 @@ func TestHandleMessage_AutoResetOnIdle_FiresWhenHeartbeatBumpedUpdatedAt(t *test
 		t.Fatal("expected a new active session after idle auto-reset")
 	}
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
-		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
+	if sent[len(sent)-1] != "fresh reply" {
+		t.Fatalf("final reply = %q, want fresh reply (auto-reset notice is terminal-only)", sent[len(sent)-1])
 	}
 }
 
@@ -9849,11 +9852,12 @@ func TestQueueMessageOverflow_DropsOldestAndReturnsfalse(t *testing.T) {
 	}
 	state.mu.Unlock()
 
-	// The 6th message should be handled (returns true) but not queued — MsgQueueFull sent.
+	// The 6th message should be handled (returns true) but not queued —
+	// dropped with a terminal log only.
 	overflow := &Message{SessionKey: key, Content: "msg-overflow", ReplyCtx: "ctx-overflow"}
 	ok := e.queueMessageForBusySession(p, overflow, key)
 	if !ok {
-		t.Fatal("expected 6th message to be handled (queue-full reply), got false")
+		t.Fatal("expected 6th message to be handled (queue-full drop), got false")
 	}
 
 	// Queue should still have exactly defaultMaxQueuedMessages items (the original 5).
@@ -9867,10 +9871,11 @@ func TestQueueMessageOverflow_DropsOldestAndReturnsfalse(t *testing.T) {
 	}
 	state.mu.Unlock()
 
-	// Platform should have received MsgMessageQueued for 5 accepted + MsgQueueFull for the overflow.
-	sent := p.getSent()
-	if len(sent) != defaultMaxQueuedMessages+1 {
-		t.Fatalf("platform replies = %d, want %d (queued + queue-full)", len(sent), defaultMaxQueuedMessages+1)
+	// Platform should have received no messages: queued messages get no
+	// per-message acknowledgement and the queue-full overflow is only logged
+	// to the terminal (notice policy).
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("platform replies = %d (%v), want 0 (queue-full is terminal-only)", len(sent), sent)
 	}
 }
 

@@ -423,7 +423,7 @@ func main() {
 		// Global [display] config can be overridden by project-level settings
 		_, _, _, _, _, showCtx, showFooter, _ := config.EffectiveDisplay(cfg, &proj)
 		engine.SetShowContextIndicator(showCtx)
-		showWorkdir := true
+		showWorkdir := false
 		if proj.ShowWorkdirIndicator != nil {
 			showWorkdir = *proj.ShowWorkdirIndicator
 		}

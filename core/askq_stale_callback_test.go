@@ -75,13 +75,13 @@ func TestCUJ_C7_StaleAskQuestionClickNotSentToAgent(t *testing.T) {
 	env.waitFor("answer delivered", 3*time.Second, func() bool { return session.answerCount() == 1 })
 
 	// User action 3: tap the card's option button after the question is gone.
+	// The stale tap is dropped with a terminal log only — no platform notice,
+	// and nothing is queued for the agent.
 	p.clearSent()
 	send("askq:0:2")
-	env.waitFor("stale notice", 3*time.Second, func() bool {
-		return env.sentContains(e.i18n.T(MsgAskQuestionStale))
-	})
-	if env.sentContains(e.i18n.T(MsgMessageQueued)) {
-		t.Fatalf("stale option tap was queued for the agent; sent: %v", p.getSent())
+	time.Sleep(300 * time.Millisecond) // allow any wrong-path reply to surface
+	if got := p.getSent(); len(got) != 0 {
+		t.Fatalf("stale option tap produced platform output; sent: %v", got)
 	}
 
 	// User action 4: the turn ends and the user sends the next task. A queued
@@ -127,8 +127,10 @@ func TestParseAskQuestionCallback(t *testing.T) {
 }
 
 func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
+	// The stale tap is dropped silently: logged to the terminal only, no
+	// platform notice is sent (per the terminal-only notice policy).
 	stale := func(e *Engine, p *stubPlatformEngine) bool {
-		return fmt.Sprint(p.getSent()) == fmt.Sprint([]string{e.i18n.T(MsgAskQuestionStale)})
+		return len(p.getSent()) == 0
 	}
 
 	t.Run("no interactive state (e.g. after restart)", func(t *testing.T) {
@@ -139,7 +141,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatal("stale option tap fell through to the normal message path")
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
+			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
 		}
 	})
 
@@ -164,7 +166,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatal("the tool permission request must stay pending")
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
+			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
 		}
 	})
 
@@ -190,7 +192,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatalf("tap on question 0's card answered question 1 (calls=%d, answers=%v)", rec.calls, pending.Answers)
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
+			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
 		}
 
 		// The current question's card still answers it.

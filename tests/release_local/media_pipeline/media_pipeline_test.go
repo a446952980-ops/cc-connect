@@ -285,7 +285,8 @@ func TestQueuedMessagePreservesFiles(t *testing.T) {
 	queued.Files = []core.FileAttachment{{MimeType: "text/plain", FileName: "queued.txt", Data: []byte("queued-file")}}
 	engine.ReceiveMessage(platform, queued)
 
-	platform.waitTextContaining(t, "process after")
+	// Queued messages get no per-message acknowledgement (terminal-only
+	// notice policy); delivery is proven by waitRecords(2) below.
 	agent.session.releaseFirstResult("first done")
 
 	records := agent.session.waitRecords(t, 2)

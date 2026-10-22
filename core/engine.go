@@ -3011,7 +3011,8 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		}
 		// Fallback: use platform-provided recognition text if available
 		if msg.Content == "" {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceNotEnabled))
+			slog.Warn("voice message dropped: STT not enabled and no platform recognition",
+				"platform", msg.Platform, "session", msg.SessionKey, "user", msg.UserName)
 			return
 		}
 		// Use platform recognition with a hint, then continue processing
@@ -3055,15 +3056,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	if !e.checkRateLimit(msg) {
 		slog.Info("message rate limited",
 			"session", msg.SessionKey, "user_id", msg.UserID, "user", msg.UserName)
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRateLimited))
 		return
 	}
 
 	// Banned words check (skip for slash commands and ! shell shortcut)
 	if !strings.HasPrefix(content, "/") && !strings.HasPrefix(content, "!") {
 		if word := e.matchBannedWord(content); word != "" {
-			slog.Info("message blocked by banned word", "word", word, "user", msg.UserName)
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgBannedWordBlocked))
+			slog.Info("message blocked by banned word", "word", word,
+				"session", msg.SessionKey, "user", msg.UserName)
 			return
 		}
 	}
@@ -3215,7 +3215,8 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 				lockGen = g
 				goto sessionLocked
 			}
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPreviousProcessing))
+			slog.Info("message dropped: previous message still processing (post recall-stop wait)",
+				"session", msg.SessionKey, "user", msg.UserName)
 			return
 		}
 		// ── busy stale-lock self-heal (custom 2026-09-12) ──────────────────
@@ -3264,7 +3265,8 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 			return
 		}
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPreviousProcessing))
+		slog.Info("message dropped: could not queue and previous message still processing",
+			"session", msg.SessionKey, "user", msg.UserName)
 		return
 	}
 
@@ -3367,10 +3369,10 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 	e.interactiveMu.Unlock()
 
 	if hasAgent {
-		// Notify the user before the potentially long close. The close
-		// returns as soon as the process exits (usually seconds), but
-		// Stop hooks can take up to 120s.
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSessionClosingGraceful))
+		// The close returns as soon as the process exits (usually seconds), but
+		// Stop hooks can take up to 120s. Logged only — no platform notice.
+		slog.Info("session auto-reset on idle: closing agent gracefully",
+			"session", msg.SessionKey)
 	}
 
 	// Lock the replacement session BEFORE releasing the old one (#1847 /
@@ -3390,7 +3392,8 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 	e.cleanupInteractiveState(interactiveKey)
 	session.UnlockWithoutUpdate(lockGen)
 
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, int(e.resetOnIdle/time.Minute)))
+	slog.Info("session auto-reset on idle",
+		"session", msg.SessionKey, "idle_minutes", int(e.resetOnIdle/time.Minute))
 	return newSession, newGen
 }
 
@@ -3429,9 +3432,10 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		return true
 	}
 	if len(state.pendingMessages) >= e.maxQueuedMessages {
-		depth := len(state.pendingMessages)
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQueueFull), depth))
-		return true // handled: queue-full reply sent
+		slog.Warn("message dropped: session queue full",
+			"session", msg.SessionKey, "user", msg.UserName,
+			"queue_depth", len(state.pendingMessages))
+		return true // handled: dropped, logged to terminal only
 	}
 	state.pendingMessages = append(state.pendingMessages, queuedMessage{
 		messageID:         msg.MessageID,
@@ -3475,7 +3479,9 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 		"user", msg.UserName,
 		"queue_depth", queueDepth,
 	)
-	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgMessageQueued))
+	// No per-message queue acknowledgement is sent to the platform: the
+	// "📬 消息已收到…" notice was noisy in group chats, and the user sees the
+	// turn's actual reply when the queue is drained.
 	return true
 }
 
@@ -3540,13 +3546,15 @@ func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, 
 
 func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 	if !e.speech.Enabled || e.speech.STT == nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceNotEnabled))
+		slog.Warn("voice message dropped: STT not enabled",
+			"platform", msg.Platform, "session", msg.SessionKey, "user", msg.UserName)
 		return
 	}
 
 	audio := msg.Audio
 	if NeedsConversion(audio.Format) && !HasFFmpeg() {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceNoFFmpeg))
+		slog.Warn("voice message dropped: ffmpeg not available for conversion",
+			"platform", msg.Platform, "format", audio.Format)
 		return
 	}
 
@@ -3565,7 +3573,8 @@ func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 
 	text = strings.TrimSpace(text)
 	if text == "" {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgVoiceEmpty))
+		slog.Warn("voice message dropped: transcription empty",
+			"platform", msg.Platform, "session", msg.SessionKey, "user", msg.UserName)
 		return
 	}
 
@@ -3791,7 +3800,6 @@ func parseAskQuestionCallback(content string) (qIdx int, hasQIdx bool, ok bool) 
 func (e *Engine) dropStaleAskQuestionCallback(p Platform, msg *Message, content string) {
 	slog.Info("dropping stale ask-question callback",
 		"session", msg.SessionKey, "content", content)
-	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgAskQuestionStale))
 }
 
 // resolveAskQuestionAnswer converts user input into answer text.

@@ -963,7 +963,7 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 		500,
 	)
 
-	// ShowContextIndicator precedence: proj.ShowContextIndicator > proj.Display.ShowContextIndicator > cfg.Display.ShowContextIndicator > default true
+	// ShowContextIndicator precedence: proj.ShowContextIndicator > proj.Display.ShowContextIndicator > cfg.Display.ShowContextIndicator > default false
 	if proj != nil && proj.ShowContextIndicator != nil {
 		showContextIndicator = *proj.ShowContextIndicator
 	} else if projDisp != nil && projDisp.ShowContextIndicator != nil {
@@ -971,10 +971,10 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 	} else if cfg.Display.ShowContextIndicator != nil {
 		showContextIndicator = *cfg.Display.ShowContextIndicator
 	} else {
-		showContextIndicator = true
+		showContextIndicator = false
 	}
 
-	// ReplyFooter precedence: proj.ReplyFooter > proj.Display.ReplyFooter > cfg.Display.ReplyFooter > default true
+	// ReplyFooter precedence: proj.ReplyFooter > proj.Display.ReplyFooter > cfg.Display.ReplyFooter > default false
 	if proj != nil && proj.ReplyFooter != nil {
 		replyFooter = *proj.ReplyFooter
 	} else if projDisp != nil && projDisp.ReplyFooter != nil {
@@ -982,7 +982,7 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 	} else if cfg.Display.ReplyFooter != nil {
 		replyFooter = *cfg.Display.ReplyFooter
 	} else {
-		replyFooter = true
+		replyFooter = false
 	}
 
 	hideAgentFooter = pickBool(

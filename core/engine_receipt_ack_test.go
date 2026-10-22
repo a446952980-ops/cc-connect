@@ -137,8 +137,9 @@ func TestReceiveMessage_ReceiptNotSentForRejectedMessages(t *testing.T) {
 	env.assertReceipts("first", "queued")
 
 	// These all go through the real public entrypoint while the first turn is busy.
+	// The queue-full overflow send is dropped and logged to the terminal only.
 	env.send("overflow", "queue is full", 4000)
-	env.awaitVisible(fmt.Sprintf(env.engine.i18n.T(MsgQueueFull), 1))
+	time.Sleep(200 * time.Millisecond) // allow any wrong-path reply to surface
 	env.send("stale", "redelivered older task", 1000)
 	env.send("command", "/status", 5000)
 	env.engine.SetDisabledCommands([]string{"shell"})

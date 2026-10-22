@@ -40,7 +40,8 @@ type Platform struct {
 	selfID                int64
 	dedup                 core.MessageDedup
 	groupNameCache        sync.Map // groupID -> group name
-	httpURL            string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
+	groupNameRefreshing   sync.Map // groupID -> in-flight async lookup guard
+	httpURL               string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -62,7 +63,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		token:                 token,
 		allowFrom:             allowFrom,
 		shareSessionInChannel: shareSessionInChannel,
-		httpURL:            httpURL,
+		httpURL:               httpURL,
 	}, nil
 }
 
@@ -176,6 +177,14 @@ func (p *Platform) handleMessage(payload map[string]any) {
 	messageID := jsonInt64(payload, "message_id")
 
 	if userID == p.selfID {
+		return
+	}
+
+	// Group messages require an explicit @bot mention; private chats pass freely.
+	// When selfID is unknown (get_login_info failed), keep the legacy behavior
+	// and process all group messages rather than bricking the bot.
+	if msgType == "group" && p.selfID != 0 && !p.isAtBot(payload) {
+		slog.Debug("qq: group message without @bot ignored", "user", userID, "group", groupID)
 		return
 	}
 
@@ -510,6 +519,56 @@ func (p *Platform) Stop() error {
 	return nil
 }
 
+// isAtBot reports whether the message contains an at-segment targeting the bot
+// itself. Per the OneBot v11 event spec the mention arrives as
+// {"type":"at","data":{"qq":"<bot qq>"}}; NapCat sends qq as a string, other
+// implementations may use a number. For CQ-code string messages the check
+// falls back to raw_message.
+func (p *Platform) isAtBot(payload map[string]any) bool {
+	self := strconv.FormatInt(p.selfID, 10)
+
+	switch msg := payload["message"].(type) {
+	case []any:
+		for _, seg := range msg {
+			s, ok := seg.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := s["type"].(string); t != "at" {
+				continue
+			}
+			data, _ := s["data"].(map[string]any)
+			if data == nil {
+				continue
+			}
+			switch qq := data["qq"].(type) {
+			case string:
+				if qq == self {
+					return true
+				}
+			case float64:
+				if int64(qq) == p.selfID {
+					return true
+				}
+			case json.Number:
+				if n, err := qq.Int64(); err == nil && n == p.selfID {
+					return true
+				}
+			}
+		}
+		return false
+	default:
+		// CQ-code string fallback: [CQ:at,qq=12345] / [CQ:at,qq=12345,...].
+		// The trailing , or ] guards against prefix collisions between QQ IDs.
+		raw, _ := payload["message"].(string)
+		if raw == "" {
+			raw, _ = payload["raw_message"].(string)
+		}
+		code := "[CQ:at,qq=" + self
+		return raw != "" && (strings.Contains(raw, code+",") || strings.Contains(raw, code+"]"))
+	}
+}
+
 func (p *Platform) resolveGroupName(groupID int64) string {
 	if groupID == 0 {
 		return ""
@@ -518,15 +577,23 @@ func (p *Platform) resolveGroupName(groupID int64) string {
 	if cached, ok := p.groupNameCache.Load(fallback); ok {
 		return cached.(string)
 	}
-	result, err := p.callAPI("get_group_info", map[string]any{"group_id": groupID})
-	if err != nil {
-		slog.Debug("qq: resolve group name failed", "group_id", groupID, "error", err)
-		return fallback
-	}
-	name, _ := result["group_name"].(string)
-	if name != "" {
-		p.groupNameCache.Store(fallback, name)
-		return name
+	// The get_group_info lookup MUST NOT run inline: handleMessage executes on
+	// the readLoop goroutine, and callAPI's echo response is routed by that
+	// same readLoop — an inline call would deadlock every incoming group
+	// message for the full 15s API timeout. Refresh asynchronously on cache
+	// miss; this message falls back to the numeric group ID.
+	if _, refreshing := p.groupNameRefreshing.LoadOrStore(fallback, struct{}{}); !refreshing {
+		go func() {
+			defer p.groupNameRefreshing.Delete(fallback)
+			result, err := p.callAPI("get_group_info", map[string]any{"group_id": groupID})
+			if err != nil {
+				slog.Debug("qq: resolve group name failed", "group_id", groupID, "error", err)
+				return
+			}
+			if name, _ := result["group_name"].(string); name != "" {
+				p.groupNameCache.Store(fallback, name)
+			}
+		}()
 	}
 	return fallback
 }
@@ -555,6 +622,10 @@ func (p *Platform) callAPI(action string, params map[string]any) (map[string]any
 	}
 
 	p.mu.Lock()
+	if p.conn == nil {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("qq: ws connection not established")
+	}
 	err = p.conn.WriteMessage(websocket.TextMessage, data)
 	p.mu.Unlock()
 	if err != nil {

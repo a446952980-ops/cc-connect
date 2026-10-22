@@ -270,7 +270,12 @@ func TestAliasDisabledCommandAndBannedWordsThroughReceiveMessage(t *testing.T) {
 
 	engine.SetBannedWords([]string{"forbidden"})
 	receive(engine, platform, "this contains forbidden content")
-	platform.waitTextContaining(t, "blocked")
+	// The block reason is logged to the terminal only (terminal-only notice
+	// policy); the platform must stay silent and the agent must not see it.
+	time.Sleep(300 * time.Millisecond)
+	if got := platform.snapshot(); len(got) != 0 {
+		t.Fatalf("banned message produced platform output: %v", got)
+	}
 	if got := agent.recordCount(); got != 0 {
 		t.Fatalf("banned message should not reach agent, got %d prompts", got)
 	}

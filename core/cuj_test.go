@@ -55,9 +55,10 @@ func TestCUJ_A8_ImmediateReceiptsDuringStartupAndQueue(t *testing.T) {
 	env.awaitSendCount(1)
 
 	// User action 2: submit a follow-up while the first task awaits its result.
+	// Queued messages get no per-message acknowledgement reply (removed as
+	// noisy); the receipts are the user-visible confirmation.
 	env.send("second", "follow-up task", 2000)
 	env.assertReceipts("first", "second")
-	env.awaitVisible(env.engine.i18n.T(MsgMessageQueued))
 
 	// User action 3: check status; local commands do not claim an agent turn.
 	env.send("status", "/status", 3000)
@@ -1233,10 +1234,10 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 	}
 }
 
-// CUJ-A4 · User sends voice → without STT configured, user gets a clear
-// "voice not enabled" message (the actual STT branch is covered by
-// platform-specific tests).
-func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
+// CUJ-A4 · Voice message without STT: the message is dropped silently — the
+// drop reason is logged to the terminal only (terminal-only notice policy),
+// and the platform must receive no output for it.
+func TestCUJ_A4_VoiceMessageWithoutSTT_DroppedWithTerminalLogOnly(t *testing.T) {
 	plat := &stubPlatformEngine{n: "test"}
 	agent := &cujAgent{}
 	dir := t.TempDir()
@@ -1253,11 +1254,11 @@ func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for {
 		if len(plat.getSent()) > 0 {
-			return
+			t.Fatalf("voice message without STT should produce no platform output, got %v", plat.getSent())
 		}
 		select {
 		case <-deadline:
-			t.Fatal("voice message without STT got NO user-facing reply")
+			return
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
