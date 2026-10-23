@@ -852,6 +852,14 @@ func main() {
 				} else {
 					slog.Warn("tts: mimo provider enabled but api_key is empty")
 				}
+			case "volcengine":
+				v := cfg.TTS.Volcengine
+				if v.AppID != "" && v.AccessToken != "" {
+					ttsCfg.TTS = core.NewVolcengineTTS(v.AppID, v.AccessToken, v.ResourceID, v.BaseURL)
+					ttsCfg.Provider = "volcengine"
+				} else {
+					slog.Warn("tts: volcengine provider enabled but app_id or access_token is empty")
+				}
 			case "espeak":
 				voice := ttsEffective.Voice
 				if voice == "" {

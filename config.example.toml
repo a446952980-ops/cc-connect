@@ -531,7 +531,7 @@ level = "info" # debug, info, warn, error
 
 # [tts]
 # enabled  = true
-# provider = "qwen"          # "qwen" | "openai" | "minimax" | "mimo" | "espeak" | "pico" | "edge"
+# provider = "qwen"          # "qwen" | "openai" | "minimax" | "mimo" | "volcengine" | "espeak" | "pico" | "edge"
 # voice    = "Cherry"        # default voice / 默认音色（千问支持：Cherry/Serena/Ethan/Chelsie 等；MiMo 支持：mimo_default/冰糖/茉莉/苏打/白桦/Mia/Chloe/Milo/Dean）
 # voice_id = ""              # optional alias for voice, useful for MiniMax voice IDs / 可选，MiniMax 音色 ID 可写这里
 # speed    = 0               # optional speed multiplier; 0 = provider default; valid range is provider-specific
@@ -564,6 +564,14 @@ level = "info" # debug, info, warn, error
 # base_url = ""              # optional: default "https://api.minimaxi.com" / 留空使用默认地址
 # model    = "speech-2.8-hd" # "speech-2.8-hd" | "speech-2.8"
 # config_file = ""           # optional MiniMax JSON config path; default data_dir/config/minimax.json
+#
+# # Alternative: Volcengine (Doubao) speech synthesis, WebSocket unidirectional streaming V3
+# # 备选：火山引擎（豆包）语音合成，WebSocket 单向流式 V3；voice 填音色 ID，如 "zh_female_vv_uranus_bigtts"
+# [tts.volcengine]
+# app_id       = "your-app-id"
+# access_token = "your-access-token"
+# resource_id  = ""          # optional: default "seed-tts-2.0" (use "seed-tts-1.0" for 1.0 voices)
+# base_url     = ""          # optional: default wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 #
 # # Per-project/agent voice overrides. Keys match [[projects]].name.
 # # 每个项目/Agent 可单独覆盖音色；key 与 [[projects]].name 一致。
