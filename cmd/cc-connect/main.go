@@ -733,6 +733,7 @@ func main() {
 		if proj.InjectSender != nil {
 			engine.SetInjectSender(*proj.InjectSender)
 		}
+		engine.SetTurnHint(proj.TurnHintEvery, proj.TurnHint)
 
 		// Wire speech-to-text if enabled
 		if cfg.Speech.Enabled {
@@ -1848,6 +1849,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload sender injection
 	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
+	engine.SetTurnHint(proj.TurnHintEvery, proj.TurnHint)
 
 	// Reload attachment send-back switch
 	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")

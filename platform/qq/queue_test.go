@@ -212,3 +212,37 @@ func TestDoAction_WhitelistAndDefaults(t *testing.T) {
 		t.Errorf("set_input_status should default group_id, got %#v", got[1].Params)
 	}
 }
+
+func TestSendAudio_RecordSegment(t *testing.T) {
+	p, reqs := startFakeOneBot(t)
+	var _ core.AudioSender = p
+
+	rctx := &replyContext{messageType: "group", groupID: 100, userID: 7, messageID: 5}
+	if err := p.SendAudio(nil, rctx, []byte("RIFFfakewav"), "wav"); err != nil {
+		t.Fatalf("SendAudio: %v", err)
+	}
+	if err := p.SendAudio(nil, &replyContext{messageType: "private", userID: 7}, []byte("x"), "mp3"); err != nil {
+		t.Fatalf("SendAudio private: %v", err)
+	}
+	if err := p.SendAudio(nil, rctx, nil, "mp3"); err == nil {
+		t.Error("empty audio must be rejected")
+	}
+
+	got := reqs()
+	if len(got) != 2 {
+		t.Fatalf("got %d requests, want 2", len(got))
+	}
+	if got[0].Action != "send_group_msg" || got[0].Params["group_id"] != float64(100) {
+		t.Errorf("group request = %+v", got[0])
+	}
+	seg := got[0].Params["message"].([]any)[0].(map[string]any)
+	if seg["type"] != "record" {
+		t.Errorf("segment type = %v, want record", seg["type"])
+	}
+	if f, _ := seg["data"].(map[string]any)["file"].(string); !strings.HasPrefix(f, "base64://") {
+		t.Errorf("record file = %q, want base64:// data", f)
+	}
+	if got[1].Action != "send_private_msg" || got[1].Params["user_id"] != float64(7) {
+		t.Errorf("private request = %+v", got[1])
+	}
+}

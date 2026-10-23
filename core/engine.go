@@ -366,6 +366,7 @@ type Engine struct {
 	tts                   *TTSCfg
 	display               DisplayCfg
 	injectSender          bool
+	turnHint              turnHintState
 	attachmentSendEnabled bool
 	startedAt             time.Time
 
@@ -1063,6 +1064,42 @@ func (e *Engine) SetSkipGit(skipGit bool) {
 func (e *Engine) SetInjectSender(v bool) {
 	e.injectSender = v
 	slog.Info("engine: inject_sender set", "enabled", v, "engine", e.name)
+}
+
+// turnHintState drives the periodic per-session hint (see SetTurnHint).
+type turnHintState struct {
+	mu     sync.Mutex
+	every  int
+	text   string
+	counts map[string]int
+}
+
+// SetTurnHint appends text as a hint line to every every-th user message of a
+// session (counted per session key), which keeps an agent behaviour such as
+// "answer by voice" evenly spaced instead of relying on the model to count.
+// every <= 0 or empty text disables it.
+func (e *Engine) SetTurnHint(every int, text string) {
+	e.turnHint.mu.Lock()
+	defer e.turnHint.mu.Unlock()
+	e.turnHint.every = every
+	e.turnHint.text = strings.TrimSpace(text)
+	e.turnHint.counts = make(map[string]int)
+	slog.Info("engine: turn hint set", "every", every, "engine", e.name)
+}
+
+// withTurnHint returns content with the hint line appended when this turn of
+// the session is due.
+func (e *Engine) withTurnHint(content, sessionKey string) string {
+	e.turnHint.mu.Lock()
+	defer e.turnHint.mu.Unlock()
+	if e.turnHint.every <= 0 || e.turnHint.text == "" {
+		return content
+	}
+	e.turnHint.counts[sessionKey]++
+	if e.turnHint.counts[sessionKey]%e.turnHint.every != 0 {
+		return content
+	}
+	return content + "\n[cc-connect hint: " + e.turnHint.text + "]"
 }
 
 // SetAttachmentSendEnabled controls whether side-channel image/file delivery is allowed.
@@ -17055,6 +17092,10 @@ func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 // it is included as sender_name so the agent can identify who sent the message
 // by display name (useful in shared channel sessions with multiple users).
 func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey string) string {
+	return e.withTurnHint(e.buildSenderIdentity(content, userID, userName, platform, sessionKey, channelKey), sessionKey)
+}
+
+func (e *Engine) buildSenderIdentity(content, userID, userName, platform, sessionKey, channelKey string) string {
 	slog.Debug("buildSenderPrompt called",
 		"inject_enabled", e.injectSender, "userID", userID, "userName", userName,
 		"platform", platform, "sessionKey", sessionKey, "channelKey", channelKey)

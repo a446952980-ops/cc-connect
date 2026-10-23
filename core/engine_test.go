@@ -16738,3 +16738,43 @@ func TestProcessInteractiveEvents_StreamingCard_BareNoReply_Suppressed(t *testin
 		t.Fatalf("silent reply leaked NO_REPLY into the streaming card: %q", card.finalContent())
 	}
 }
+
+func TestTurnHint_EveryNthTurnPerSession(t *testing.T) {
+	e := newTestEngine()
+	e.SetInjectSender(false)
+	e.SetTurnHint(3, "use voice")
+
+	var hinted []int
+	for i := 1; i <= 9; i++ {
+		out := e.buildSenderPrompt("hi", "u1", "A", "qq", "qq:g:1", "")
+		if strings.Contains(out, "[cc-connect hint: use voice]") {
+			hinted = append(hinted, i)
+		}
+	}
+	if len(hinted) != 3 || hinted[0] != 3 || hinted[1] != 6 || hinted[2] != 9 {
+		t.Errorf("hinted turns = %v, want [3 6 9]", hinted)
+	}
+
+	// Another session keeps its own counter.
+	for i := 1; i <= 2; i++ {
+		if out := e.buildSenderPrompt("hi", "u1", "A", "qq", "qq:g:2", ""); strings.Contains(out, "hint") {
+			t.Errorf("session 2 turn %d should not be hinted", i)
+		}
+	}
+	if out := e.buildSenderPrompt("hi", "u1", "A", "qq", "qq:g:2", ""); !strings.Contains(out, "hint") {
+		t.Error("session 2 turn 3 should be hinted")
+	}
+}
+
+func TestTurnHint_DisabledByDefault(t *testing.T) {
+	e := newTestEngine()
+	for i := 0; i < 10; i++ {
+		if out := e.buildSenderPrompt("hi", "u1", "A", "qq", "qq:g:1", ""); strings.Contains(out, "hint") {
+			t.Fatalf("turn %d hinted although the hint is disabled", i)
+		}
+	}
+	e.SetTurnHint(2, "   ")
+	if out := e.withTurnHint("x", "k"); out != "x" {
+		t.Errorf("empty hint text must be a no-op, got %q", out)
+	}
+}

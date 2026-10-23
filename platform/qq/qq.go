@@ -577,6 +577,31 @@ func (p *Platform) SendImage(ctx context.Context, replyCtx any, img core.ImageAt
 
 var _ core.ImageSender = (*Platform)(nil)
 
+// SendAudio sends an audio clip as a native QQ voice message (OneBot "record"
+// segment). NapCat transcodes common formats (mp3, wav, ogg, ...) to QQ's
+// voice codec itself, so the bytes are passed through; format is only a hint.
+// Implements core.AudioSender.
+func (p *Platform) SendAudio(ctx context.Context, replyCtx any, audio []byte, format string) error {
+	rctx, ok := replyCtx.(*replyContext)
+	if !ok {
+		return fmt.Errorf("qq: SendAudio: invalid reply context type %T", replyCtx)
+	}
+	if len(audio) == 0 {
+		return fmt.Errorf("qq: SendAudio: empty audio")
+	}
+	segments := []map[string]any{
+		{"type": "record", "data": map[string]any{"file": "base64://" + base64.StdEncoding.EncodeToString(audio)}},
+	}
+	return p.queueFor(chatKey(rctx)).submit(ctx, kindMessage, func() error {
+		if _, err := p.callAPI(sendAction(rctx), sendParams(rctx, segments)); err != nil {
+			return fmt.Errorf("qq: send voice (%s): %w", format, err)
+		}
+		return nil
+	})
+}
+
+var _ core.AudioSender = (*Platform)(nil)
+
 func (p *Platform) Stop() error {
 	if p.cancel != nil {
 		p.cancel()
