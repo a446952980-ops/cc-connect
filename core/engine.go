@@ -1062,6 +1062,7 @@ func (e *Engine) SetSkipGit(skipGit bool) {
 // accordingly (e.g. personal task views, role-based access control).
 func (e *Engine) SetInjectSender(v bool) {
 	e.injectSender = v
+	slog.Info("engine: inject_sender set", "enabled", v, "engine", e.name)
 }
 
 // SetAttachmentSendEnabled controls whether side-channel image/file delivery is allowed.
@@ -17018,6 +17019,9 @@ func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
 // it is included as sender_name so the agent can identify who sent the message
 // by display name (useful in shared channel sessions with multiple users).
 func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionKey, channelKey string) string {
+	slog.Debug("buildSenderPrompt called",
+		"inject_enabled", e.injectSender, "userID", userID, "userName", userName,
+		"platform", platform, "sessionKey", sessionKey, "channelKey", channelKey)
 	if !e.injectSender || userID == "" {
 		return content
 	}

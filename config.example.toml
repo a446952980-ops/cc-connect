@@ -1804,6 +1804,12 @@ app_secret = "your-feishu-app-secret"
 # allow_from = "*"                 # allowed QQ user IDs, e.g. "12345,67890" or "*" for all
 #                                  # 允许的 QQ 号，如 "12345,67890"，"*" 表示所有
 # share_session_in_channel = false  # If true, all users in a group share one agent session / 群聊共享会话
+# ack_emoji_id = 0                  # Emoji reaction ID added to the user's message when accepted for
+#                                  # processing/queueing (NapCat set_msg_emoji_like; 0 = disabled, e.g. 9749)
+#                                  # 消息被接受处理或入队时给用户消息添加的表情 ID（NapCat 扩展；0 为禁用，如 9749）
+# done_emoji_id = 0                 # Emoji reaction ID added to the user's message when the agent finishes
+#                                  # (0 = disabled). Requires NapCat; other OneBot implementations may not support it.
+#                                  # Agent 完成回复后给用户消息添加的表情 ID（0 为禁用）；需 NapCat 支持。
 
 # QQ Bot (Official / 官方 QQ 机器人) (uncomment to enable / 取消注释以启用)
 # Uses the official QQ Bot Platform API — no third-party adapter needed.

@@ -84,6 +84,178 @@ func TestNew_ShareSessionInChannel(t *testing.T) {
 	}
 }
 
+func TestNew_EmojiReactionOptions(t *testing.T) {
+	p, err := New(map[string]any{
+		"ack_emoji_id":  int64(9749),
+		"done_emoji_id": "128077", // numeric strings are accepted too
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	platform := p.(*Platform)
+	if platform.ackEmojiID != 9749 {
+		t.Errorf("ackEmojiID = %d, want 9749", platform.ackEmojiID)
+	}
+	if platform.doneEmojiID != 128077 {
+		t.Errorf("doneEmojiID = %d, want 128077", platform.doneEmojiID)
+	}
+
+	// Defaults: disabled (0) when not configured.
+	p2, err := New(map[string]any{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	platform2 := p2.(*Platform)
+	if platform2.ackEmojiID != 0 || platform2.doneEmojiID != 0 {
+		t.Errorf("default emoji IDs = (%d, %d), want (0, 0)", platform2.ackEmojiID, platform2.doneEmojiID)
+	}
+}
+
+// TestPrepareReceiptAcknowledgement verifies the OnAccepted hook is wired only
+// when ack_emoji_id is configured and the message carries a message ID.
+func TestPrepareReceiptAcknowledgement(t *testing.T) {
+	rctx := &replyContext{messageID: 12345}
+
+	withAck := &Platform{ackEmojiID: 9749}
+	msg := &core.Message{}
+	withAck.prepareReceiptAcknowledgement(msg, rctx)
+	if msg.OnAccepted == nil {
+		t.Fatal("OnAccepted should be wired when ack_emoji_id is configured")
+	}
+
+	disabled := &Platform{}
+	msg2 := &core.Message{}
+	disabled.prepareReceiptAcknowledgement(msg2, rctx)
+	if msg2.OnAccepted != nil {
+		t.Error("OnAccepted must stay nil when ack_emoji_id is 0")
+	}
+
+	noMsgID := &Platform{ackEmojiID: 9749}
+	msg3 := &core.Message{}
+	noMsgID.prepareReceiptAcknowledgement(msg3, &replyContext{})
+	if msg3.OnAccepted != nil {
+		t.Error("OnAccepted must stay nil when message ID is 0")
+	}
+}
+
+// capturedAPIReq mirrors the OneBot WebSocket request envelope for assertions.
+type capturedAPIReq struct {
+	Action string         `json:"action"`
+	Params map[string]any `json:"params"`
+}
+
+// TestEmojiReactions_EndToEnd drives both reaction paths against a fake
+// OneBot WS server and asserts the exact set_msg_emoji_like parameters
+// (NapCat extension action: message_id + emoji_id + set).
+func TestEmojiReactions_EndToEnd(t *testing.T) {
+	captured := make(chan capturedAPIReq, 8)
+
+	upgrader := websocket.Upgrader{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			_, raw, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req capturedAPIReq
+			if json.Unmarshal(raw, &req) != nil {
+				continue
+			}
+			var probe map[string]any
+			_ = json.Unmarshal(raw, &probe)
+			echo, _ := probe["echo"].(string)
+			resp, _ := json.Marshal(map[string]any{
+				"status": "ok", "retcode": 0, "echo": echo, "data": map[string]any{},
+			})
+			if err := c.WriteMessage(websocket.TextMessage, resp); err != nil {
+				return
+			}
+			if req.Action == "set_msg_emoji_like" {
+				captured <- req
+			}
+		}
+	}))
+	defer ts.Close()
+
+	p := &Platform{
+		wsURL:       "ws" + strings.TrimPrefix(ts.URL, "http"),
+		ackEmojiID:  9749,
+		doneEmojiID: 128077,
+	}
+	received := make(chan *core.Message, 1)
+	if err := p.Start(func(_ core.Platform, m *core.Message) { received <- m }); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer p.Stop()
+
+	// 1. Private message → OnAccepted must be wired; invoking it (as the
+	// engine's runMessageAccepted does) sends the ack reaction.
+	p.handleMessage(map[string]any{
+		"post_type": "message", "message_type": "private",
+		"user_id": float64(777), "message_id": float64(555),
+		"message": []any{map[string]any{"type": "text", "data": map[string]any{"text": "hi"}}},
+	})
+	msg := <-received
+	if msg.OnAccepted == nil {
+		t.Fatal("OnAccepted should be wired for the incoming message")
+	}
+	msg.OnAccepted()
+
+	req := awaitCaptured(t, captured)
+	assertEmojiReq(t, req, 555, 9749)
+
+	// 2. AddDoneReaction (engine's TypingIndicatorDone hook) sends the done
+	// reaction against the triggering message.
+	p.AddDoneReaction(&replyContext{messageType: "private", userID: 777, messageID: 555})
+	req = awaitCaptured(t, captured)
+	assertEmojiReq(t, req, 555, 128077)
+}
+
+// TestAddDoneReaction_Guards ensures the done hook is a safe no-op when
+// disabled, given a foreign reply context, or missing a message ID.
+func TestAddDoneReaction_Guards(t *testing.T) {
+	disabled := &Platform{}
+	disabled.AddDoneReaction(&replyContext{messageID: 1}) // must not panic or block
+
+	enabled := &Platform{doneEmojiID: 128077}
+	enabled.AddDoneReaction("not-a-reply-context")      // wrong type: no-op
+	enabled.AddDoneReaction(&replyContext{messageID: 0}) // no message ID: no-op
+	// No conn is set; any real API attempt would block for the 15s callAPI
+	// timeout, so reaching this point quickly proves all guards held.
+}
+
+func awaitCaptured(t *testing.T, ch <-chan capturedAPIReq) capturedAPIReq {
+	t.Helper()
+	select {
+	case req := <-ch:
+		return req
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for set_msg_emoji_like request")
+		return capturedAPIReq{}
+	}
+}
+
+func assertEmojiReq(t *testing.T, req capturedAPIReq, wantMsgID, wantEmojiID int64) {
+	t.Helper()
+	if req.Action != "set_msg_emoji_like" {
+		t.Fatalf("action = %q, want set_msg_emoji_like", req.Action)
+	}
+	if got := jsonInt64(req.Params, "message_id"); got != wantMsgID {
+		t.Errorf("message_id = %d, want %d", got, wantMsgID)
+	}
+	if got := jsonInt64(req.Params, "emoji_id"); got != wantEmojiID {
+		t.Errorf("emoji_id = %d, want %d", got, wantEmojiID)
+	}
+	if set, _ := req.Params["set"].(bool); !set {
+		t.Errorf("set = %v, want true", req.Params["set"])
+	}
+}
+
 // TestHandleMessage_GroupRequiresAtBot verifies that group messages are only
 // processed when they explicitly @-mention the bot, while private messages
 // pass without a mention. Regression test for the group spam gate: before this

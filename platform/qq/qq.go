@@ -42,6 +42,8 @@ type Platform struct {
 	groupNameCache        sync.Map // groupID -> group name
 	groupNameRefreshing   sync.Map // groupID -> in-flight async lookup guard
 	httpURL               string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
+	ackEmojiID            int64    // emoji reaction added when a message is accepted (0 = disabled)
+	doneEmojiID           int64    // emoji reaction added when the agent finishes (0 = disabled)
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -64,7 +66,26 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:             allowFrom,
 		shareSessionInChannel: shareSessionInChannel,
 		httpURL:               httpURL,
+		ackEmojiID:            optInt64(opts, "ack_emoji_id"),
+		doneEmojiID:           optInt64(opts, "done_emoji_id"),
 	}, nil
+}
+
+// optInt64 reads an integer option. TOML decodes integers as int64, but JSON
+// overrides and hand-written configs may surface float64 or numeric strings.
+func optInt64(opts map[string]any, key string) int64 {
+	switch v := opts[key].(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case string:
+		n, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		return n
+	}
+	return 0
 }
 
 func (p *Platform) Name() string { return "qq" }
@@ -259,6 +280,7 @@ func (p *Platform) handleMessage(payload map[string]any) {
 		Audio:      audio,
 		ReplyCtx:   rctx,
 	}
+	p.prepareReceiptAcknowledgement(msg, rctx)
 
 	slog.Debug("qq: message received", "type", msgType, "user", userID, "text_len", len(text))
 	p.handler(p, msg)
@@ -703,6 +725,60 @@ func (p *Platform) callHTTPAPI(action string, params map[string]any) (map[string
 	_ = json.Unmarshal(apiResp.Data, &result)
 	return result, nil
 }
+
+// ── Emoji reactions (NapCat set_msg_emoji_like extension) ────────
+
+// prepareReceiptAcknowledgement wires msg.OnAccepted so the engine's
+// acceptance hook — fired when the message starts processing or is queued —
+// adds the configured ack emoji to the user's message. Mirrors the feishu
+// adapter's receipt semantics; disabled when ack_emoji_id is not configured.
+func (p *Platform) prepareReceiptAcknowledgement(msg *core.Message, rctx *replyContext) {
+	if p.ackEmojiID == 0 || rctx.messageID == 0 {
+		return
+	}
+	messageID := int64(rctx.messageID)
+	msg.OnAccepted = func() {
+		go func() {
+			if err := p.setMsgEmojiLike(messageID, p.ackEmojiID, true); err != nil {
+				slog.Warn("qq: ack reaction failed", "message_id", messageID, "error", err)
+			}
+		}()
+	}
+}
+
+// AddDoneReaction implements core.TypingIndicatorDone: the engine calls it
+// after the agent's final answer to add the configured done emoji to the
+// triggering user message. Disabled when done_emoji_id is not configured.
+func (p *Platform) AddDoneReaction(rctx any) {
+	if p.doneEmojiID == 0 {
+		return
+	}
+	rc, ok := rctx.(*replyContext)
+	if !ok || rc.messageID == 0 {
+		return
+	}
+	messageID := int64(rc.messageID)
+	go func() {
+		if err := p.setMsgEmojiLike(messageID, p.doneEmojiID, true); err != nil {
+			slog.Warn("qq: done reaction failed", "message_id", messageID, "error", err)
+		}
+	}()
+}
+
+// setMsgEmojiLike calls NapCat's set_msg_emoji_like action to add (set=true)
+// or remove (set=false) an emoji reaction on a message. This action is a
+// NapCat extension beyond the OneBot v11 standard; implementations without
+// it return an error, which callers log and ignore.
+func (p *Platform) setMsgEmojiLike(messageID, emojiID int64, set bool) error {
+	_, err := p.callAPI("set_msg_emoji_like", map[string]any{
+		"message_id": messageID,
+		"emoji_id":   emojiID,
+		"set":        set,
+	})
+	return err
+}
+
+var _ core.TypingIndicatorDone = (*Platform)(nil)
 
 // ── Helpers ─────────────────────────────────────────────────────
 

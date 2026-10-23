@@ -11273,6 +11273,12 @@ func TestBuildSenderPrompt_DifferentPlatforms(t *testing.T) {
 		{"telegram", "telegram:group99:alice", "group99"},
 		{"discord", "discord:server1:bob", "server1"},
 		{"slack", "slack:C012345:carol", "C012345"},
+		// QQ: "qq:g:<groupID>" (shared group session) has type tag "g" → chat is segment[2]
+		{"qq", "qq:g:10086", "10086"},
+		// QQ: "qq:<groupID>:<userID>" (per-user group session) has no type tag → chat is segment[1]
+		{"qq", "qq:10086:24680", "10086"},
+		// QQ: "qq:<userID>" (private)
+		{"qq", "qq:24680", "24680"},
 	}
 	for _, tc := range platforms {
 		result := e.buildSenderPrompt("msg", "uid", "TestUser", tc.platform, tc.sessionKey, "")
@@ -11280,7 +11286,7 @@ func TestBuildSenderPrompt_DifferentPlatforms(t *testing.T) {
 			t.Errorf("missing platform=%s in %q", tc.platform, result)
 		}
 		if !strings.Contains(result, "chat_id="+tc.wantChat) {
-			t.Errorf("missing chat_id=%s in %q", tc.wantChat, result)
+			t.Errorf("missing chat_id=%s in %q (sessionKey=%s)", tc.wantChat, result, tc.sessionKey)
 		}
 	}
 }

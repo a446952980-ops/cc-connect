@@ -141,7 +141,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatal("stale option tap fell through to the normal message path")
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
+			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
 		}
 	})
 
@@ -166,7 +166,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatal("the tool permission request must stay pending")
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
+			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
 		}
 	})
 
@@ -192,7 +192,7 @@ func TestHandlePendingPermission_StaleAskQuestionCallback(t *testing.T) {
 			t.Fatalf("tap on question 0's card answered question 1 (calls=%d, answers=%v)", rec.calls, pending.Answers)
 		}
 		if !stale(e, p) {
-			t.Fatalf("sent = %v, want no platform output (stale tap logged to terminal only)", p.getSent())
+			t.Fatalf("sent = %v, want only the stale-question notice", p.getSent())
 		}
 
 		// The current question's card still answers it.
