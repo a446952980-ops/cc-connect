@@ -44,6 +44,10 @@ type Platform struct {
 	httpURL               string   // OneBot HTTP API URL, e.g. "http://127.0.0.1:3000"
 	ackEmojiID            int64    // emoji reaction added when a message is accepted (0 = disabled)
 	doneEmojiID           int64    // emoji reaction added when the agent finishes (0 = disabled)
+	queues                sync.Map // chat key -> *chatQueue (ordered outbound queue)
+	sendIntervalMin       time.Duration
+	sendIntervalMax       time.Duration
+	finalMaxChars         int // final replies longer than this are split into several messages (0 = off)
 }
 
 func New(opts map[string]any) (core.Platform, error) {
@@ -68,7 +72,19 @@ func New(opts map[string]any) (core.Platform, error) {
 		httpURL:               httpURL,
 		ackEmojiID:            optInt64(opts, "ack_emoji_id"),
 		doneEmojiID:           optInt64(opts, "done_emoji_id"),
+		sendIntervalMin:       time.Duration(optInt64Default(opts, "send_interval_min_ms", defaultSendIntervalMinMS)) * time.Millisecond,
+		sendIntervalMax:       time.Duration(optInt64Default(opts, "send_interval_max_ms", defaultSendIntervalMaxMS)) * time.Millisecond,
+		finalMaxChars:         int(optInt64Default(opts, "final_reply_max_chars", defaultFinalReplyMaxChars)),
 	}, nil
+}
+
+// optInt64Default is optInt64 with a default for absent keys, so an explicit 0
+// can still disable a feature.
+func optInt64Default(opts map[string]any, key string, def int64) int64 {
+	if _, ok := opts[key]; !ok {
+		return def
+	}
+	return optInt64(opts, key)
 }
 
 // optInt64 reads an integer option. TOML decodes integers as int64, but JSON
@@ -473,26 +489,69 @@ func (p *Platform) Reply(ctx context.Context, replyCtx any, content string) erro
 	return p.Send(ctx, replyCtx, content)
 }
 
-// Send sends a message to the conversation identified by replyCtx.
+// Send sends a message to the conversation identified by replyCtx. It goes
+// through the chat's ordered queue and returns after the message was sent.
 func (p *Platform) Send(ctx context.Context, replyCtx any, content string) error {
 	rctx, ok := replyCtx.(*replyContext)
 	if !ok {
 		return fmt.Errorf("qq: invalid reply context")
 	}
+	return p.queueFor(chatKey(rctx)).submit(ctx, kindMessage, func() error {
+		_, err := p.callAPI(sendAction(rctx), sendParams(rctx, content))
+		return err
+	})
+}
 
-	params := map[string]any{
-		"message": content,
+// sendAction and sendParams build a plain send_*_msg call for the chat.
+func sendAction(rctx *replyContext) string {
+	if rctx.messageType == "group" {
+		return "send_group_msg"
 	}
+	return "send_private_msg"
+}
 
+func sendParams(rctx *replyContext, message any) map[string]any {
+	params := map[string]any{"message": message}
 	if rctx.messageType == "group" {
 		params["group_id"] = rctx.groupID
-		_, err := p.callAPI("send_group_msg", params)
-		return err
+	} else {
+		params["user_id"] = rctx.userID
 	}
+	return params
+}
 
-	params["user_id"] = rctx.userID
-	_, err := p.callAPI("send_private_msg", params)
-	return err
+// SendFinalReply sends the agent's final answer of a turn. In group chats the
+// first message quotes the triggering message with a reply segment; side
+// messages sent via Send (e.g. `cc-connect send`) stay unquoted. Answers longer
+// than final_reply_max_chars are split into several messages, spaced like any
+// other consecutive messages, as a safety net against walls of text.
+// Implements core.FinalReplySender.
+func (p *Platform) SendFinalReply(ctx context.Context, replyCtx any, content string) error {
+	rctx, ok := replyCtx.(*replyContext)
+	if !ok {
+		return fmt.Errorf("qq: invalid reply context")
+	}
+	chunks := splitReply(content, p.finalMaxChars)
+	quote := rctx.messageType == "group" && rctx.messageID != 0
+
+	return p.queueFor(chatKey(rctx)).submit(ctx, kindMessage, func() error {
+		for i, chunk := range chunks {
+			if i > 0 {
+				time.Sleep(p.randomGap())
+			}
+			var message any = chunk
+			if i == 0 && quote {
+				message = []map[string]any{
+					{"type": "reply", "data": map[string]any{"id": strconv.FormatInt(int64(rctx.messageID), 10)}},
+					{"type": "text", "data": map[string]any{"text": chunk}},
+				}
+			}
+			if _, err := p.callAPI(sendAction(rctx), sendParams(rctx, message)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SendImage sends an image to the conversation.
@@ -508,25 +567,12 @@ func (p *Platform) SendImage(ctx context.Context, replyCtx any, img core.ImageAt
 		{"type": "image", "data": map[string]any{"file": "base64://" + b64}},
 	}
 
-	params := map[string]any{
-		"message": segments,
-	}
-
-	if rctx.messageType == "group" {
-		params["group_id"] = rctx.groupID
-		_, err := p.callAPI("send_group_msg", params)
-		if err != nil {
+	return p.queueFor(chatKey(rctx)).submit(ctx, kindMessage, func() error {
+		if _, err := p.callAPI(sendAction(rctx), sendParams(rctx, segments)); err != nil {
 			return fmt.Errorf("qq: send image: %w", err)
 		}
 		return nil
-	}
-
-	params["user_id"] = rctx.userID
-	_, err := p.callAPI("send_private_msg", params)
-	if err != nil {
-		return fmt.Errorf("qq: send image: %w", err)
-	}
-	return nil
+	})
 }
 
 var _ core.ImageSender = (*Platform)(nil)
@@ -737,9 +783,13 @@ func (p *Platform) prepareReceiptAcknowledgement(msg *core.Message, rctx *replyC
 		return
 	}
 	messageID := int64(rctx.messageID)
+	key := chatKey(rctx)
 	msg.OnAccepted = func() {
 		go func() {
-			if err := p.setMsgEmojiLike(messageID, p.ackEmojiID, true); err != nil {
+			err := p.queueFor(key).submit(context.Background(), kindAction, func() error {
+				return p.setMsgEmojiLike(messageID, p.ackEmojiID, true)
+			})
+			if err != nil {
 				slog.Warn("qq: ack reaction failed", "message_id", messageID, "error", err)
 			}
 		}()
@@ -758,8 +808,12 @@ func (p *Platform) AddDoneReaction(rctx any) {
 		return
 	}
 	messageID := int64(rc.messageID)
+	key := chatKey(rc)
 	go func() {
-		if err := p.setMsgEmojiLike(messageID, p.doneEmojiID, true); err != nil {
+		err := p.queueFor(key).submit(context.Background(), kindAction, func() error {
+			return p.setMsgEmojiLike(messageID, p.doneEmojiID, true)
+		})
+		if err != nil {
 			slog.Warn("qq: done reaction failed", "message_id", messageID, "error", err)
 		}
 	}()
@@ -779,6 +833,55 @@ func (p *Platform) setMsgEmojiLike(messageID, emojiID int64, set bool) error {
 }
 
 var _ core.TypingIndicatorDone = (*Platform)(nil)
+
+// ── Platform actions (poke, typing status, ...) ──────────────────
+
+// queuedActions are the non-message NapCat actions an agent may trigger via
+// `cc-connect send --action`. They are small, reversible and safe to run from
+// a chat; anything riskier (ban, kick, recall, profile changes) stays out and
+// needs the user's explicit approval through other channels.
+var queuedActions = map[string]bool{
+	"group_poke":         true,
+	"friend_poke":        true,
+	"send_poke":          true,
+	"set_input_status":   true,
+	"set_msg_emoji_like": true,
+	"set_group_sign":     true,
+}
+
+// DoAction runs one whitelisted NapCat action inside the chat's ordered queue,
+// so it executes after every message queued before it. Missing group_id /
+// user_id params are filled in from the conversation.
+// Implements core.PlatformActionSender.
+func (p *Platform) DoAction(ctx context.Context, replyCtx any, action string, params map[string]any) (map[string]any, error) {
+	rctx, ok := replyCtx.(*replyContext)
+	if !ok {
+		return nil, fmt.Errorf("qq: invalid reply context")
+	}
+	if !queuedActions[action] {
+		return nil, fmt.Errorf("qq: action %q is not allowed here", action)
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	if rctx.messageType == "group" {
+		if _, ok := params["group_id"]; !ok && action != "friend_poke" && action != "set_msg_emoji_like" {
+			params["group_id"] = rctx.groupID
+		}
+	} else if _, ok := params["user_id"]; !ok && action != "set_msg_emoji_like" {
+		params["user_id"] = rctx.userID
+	}
+
+	var result map[string]any
+	err := p.queueFor(chatKey(rctx)).submit(ctx, kindAction, func() error {
+		var err error
+		result, err = p.callAPI(action, params)
+		return err
+	})
+	return result, err
+}
+
+var _ core.PlatformActionSender = (*Platform)(nil)
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -919,29 +1022,31 @@ func (p *Platform) SendFile(ctx context.Context, replyCtx any, file core.FileAtt
 		call = p.callHTTPAPI
 	}
 
-	if rctx.messageType == "group" {
-		_, err := call("upload_group_file", map[string]any{
-			"group_id": rctx.groupID,
-			"file":     b64data,
-			"name":     name,
+	return p.queueFor(chatKey(rctx)).submit(ctx, kindMessage, func() error {
+		if rctx.messageType == "group" {
+			_, err := call("upload_group_file", map[string]any{
+				"group_id": rctx.groupID,
+				"file":     b64data,
+				"name":     name,
+			})
+			if err != nil {
+				return fmt.Errorf("qq: SendFile group: %w", err)
+			}
+			return nil
+		}
+
+		// Private: use send_private_msg with file segment
+		_, err := call("send_private_msg", map[string]any{
+			"user_id": rctx.userID,
+			"message": []map[string]any{
+				{"type": "file", "data": map[string]any{"file": b64data, "name": name}},
+			},
 		})
 		if err != nil {
-			return fmt.Errorf("qq: SendFile group: %w", err)
+			return fmt.Errorf("qq: SendFile private: %w", err)
 		}
 		return nil
-	}
-
-	// Private: use send_private_msg with file segment
-	_, err := call("send_private_msg", map[string]any{
-		"user_id": rctx.userID,
-		"message": []map[string]any{
-			{"type": "file", "data": map[string]any{"file": b64data, "name": name}},
-		},
 	})
-	if err != nil {
-		return fmt.Errorf("qq: SendFile private: %w", err)
-	}
-	return nil
 }
 
 var _ core.FileSender = (*Platform)(nil)

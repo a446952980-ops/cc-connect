@@ -63,6 +63,10 @@ func runSend(args []string) {
 		os.Exit(1)
 	}
 
+	if req.Action != "" {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return
+	}
 	fmt.Println("Message sent successfully.")
 }
 
@@ -149,6 +153,20 @@ func parseSendArgs(args []string) (core.SendRequest, string, error) {
 			}
 		case "--at-all":
 			req.AtAll = true
+		case "--action":
+			if i+1 >= len(args) {
+				return req, "", fmt.Errorf("--action requires a value")
+			}
+			i++
+			req.Action = args[i]
+		case "--action-params":
+			if i+1 >= len(args) {
+				return req, "", fmt.Errorf("--action-params requires a JSON object")
+			}
+			i++
+			if err := json.Unmarshal([]byte(args[i]), &req.ActionParams); err != nil {
+				return req, "", fmt.Errorf("--action-params: invalid JSON: %w", err)
+			}
 		case "--data-dir":
 			if i+1 >= len(args) {
 				return req, "", fmt.Errorf("--data-dir requires a value")
@@ -208,7 +226,7 @@ func parseSendArgs(args []string) (core.SendRequest, string, error) {
 	req.Audios = audioFiles
 	req.Videos = videoFiles
 
-	if req.Message == "" && req.TTSText == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
+	if req.Action == "" && req.Message == "" && req.TTSText == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
 		return req, "", fmt.Errorf("message, tts text, or attachment is required")
 	}
 
@@ -382,6 +400,8 @@ Options:
       --stdin              Read message from stdin (best for long/special-char messages)
       --at-users <ids>     @ user IDs, comma-separated (DingTalk)
       --at-all             @ everyone (DingTalk)
+      --action <name>      Run a platform action instead of sending (e.g. QQ group_poke)
+      --action-params <j>  JSON object with the action's parameters
   -p, --project <name>     Target project (optional if only one project)
   -s, --session <key>      Target session key (optional, picks first active)
       --data-dir <path>    Data directory (default: ~/.cc-connect)

@@ -348,3 +348,20 @@ func TestBuildSendPayload_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("decoded files = %#v", decoded.Files)
 	}
 }
+
+func TestParseSendArgs_Action(t *testing.T) {
+	req, _, err := parseSendArgs([]string{"--action", "group_poke", "--action-params", `{"user_id":42}`})
+	if err != nil {
+		t.Fatalf("parseSendArgs: %v", err)
+	}
+	if req.Action != "group_poke" {
+		t.Errorf("Action = %q, want group_poke", req.Action)
+	}
+	if got, _ := req.ActionParams["user_id"].(float64); got != 42 {
+		t.Errorf("ActionParams = %#v, want user_id 42", req.ActionParams)
+	}
+
+	if _, _, err := parseSendArgs([]string{"--action", "group_poke", "--action-params", "{bad"}); err == nil {
+		t.Error("invalid --action-params JSON should be rejected")
+	}
+}

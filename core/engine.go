@@ -5441,7 +5441,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		e.sendForWorkspace(p, replyCtx, content, workspaceDir)
 	}
 	sendWorkspaceWithError := func(p Platform, replyCtx any, content string) error {
-		return e.sendWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
+		return e.sendFinalWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
 	}
 
 	// Streaming card: aggregate entire turn into a single updatable card.
@@ -11773,6 +11773,23 @@ type SendOptions struct {
 	AtAll   bool
 }
 
+// PerformPlatformAction runs a platform action (poke, typing status, ...) for
+// the target session, queued behind any messages already being sent.
+func (e *Engine) PerformPlatformAction(sessionKey, action string, params map[string]any) (map[string]any, error) {
+	_, p, replyCtx, err := e.resolveOutboundSessionTarget(sessionKey, false)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, fmt.Errorf("no active session to run %q", action)
+	}
+	as, ok := p.(PlatformActionSender)
+	if !ok {
+		return nil, fmt.Errorf("platform %s: %w", p.Name(), ErrNotSupported)
+	}
+	return as.DoAction(e.ctx, replyCtx, action, params)
+}
+
 func (e *Engine) SendToSessionWithAttachments(sessionKey, message string, images []ImageAttachment, files []FileAttachment, atUsers []string, atAll bool) error {
 	return e.SendToSessionWithOptions(sessionKey, message, images, files, SendOptions{AtUsers: atUsers, AtAll: atAll})
 }
@@ -12551,6 +12568,25 @@ func (e *Engine) sendWithErrorForWorkspace(p Platform, replyCtx any, content, wo
 	}
 	content = e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
 	return e.sendAlreadyRenderedWithError(p, replyCtx, content)
+}
+
+// sendFinalWithErrorForWorkspace delivers the turn's final answer, using the
+// platform's FinalReplySender when it has one.
+func (e *Engine) sendFinalWithErrorForWorkspace(p Platform, replyCtx any, content, workspaceDir string) error {
+	fs, ok := p.(FinalReplySender)
+	if !ok {
+		return e.sendWithErrorForWorkspace(p, replyCtx, content, workspaceDir)
+	}
+	if err := e.waitOutgoing(p); err != nil {
+		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
+		return err
+	}
+	content = e.renderOutgoingContentForWorkspace(p, content, workspaceDir)
+	if err := fs.SendFinalReply(e.ctx, replyCtx, content); err != nil {
+		slog.Error("platform final reply failed", "platform", p.Name(), "error", err, "content_len", len(content))
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) sendForWorkspace(p Platform, replyCtx any, content, workspaceDir string) {

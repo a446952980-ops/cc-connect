@@ -521,3 +521,106 @@ func TestStart_FetchesSelfIDWithoutTimeout(t *testing.T) {
 		t.Errorf("selfID = %d, want %d (self-message filter would be disabled)", p.selfID, botUserID)
 	}
 }
+
+// TestSendFinalReply_QuotesOnlyGroupFinal checks that only the final reply in a
+// group carries a reply segment; Send (used by `cc-connect send`) stays plain.
+func TestSendFinalReply_QuotesOnlyGroupFinal(t *testing.T) {
+	captured := make(chan map[string]any, 4)
+
+	upgrader := websocket.Upgrader{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			_, raw, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req map[string]any
+			if json.Unmarshal(raw, &req) != nil {
+				continue
+			}
+			echo, _ := req["echo"].(string)
+			resp, _ := json.Marshal(map[string]any{
+				"status": "ok", "retcode": 0, "echo": echo, "data": map[string]any{},
+			})
+			if err := c.WriteMessage(websocket.TextMessage, resp); err != nil {
+				return
+			}
+			if act, _ := req["action"].(string); strings.HasPrefix(act, "send_") {
+				captured <- req
+			}
+		}
+	}))
+	defer ts.Close()
+
+	p := &Platform{wsURL: "ws" + strings.TrimPrefix(ts.URL, "http")}
+	if err := p.Start(func(core.Platform, *core.Message) {}); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer p.Stop()
+
+	var _ core.FinalReplySender = p
+
+	rctx := &replyContext{messageType: "group", groupID: 100, userID: 7, messageID: 555}
+
+	// Final reply in a group → [reply, text] segments.
+	if err := p.SendFinalReply(nil, rctx, "hello"); err != nil {
+		t.Fatalf("SendFinalReply: %v", err)
+	}
+	req := awaitMap(t, captured)
+	params := req["params"].(map[string]any)
+	segs, ok := params["message"].([]any)
+	if !ok || len(segs) != 2 {
+		t.Fatalf("message = %#v, want 2 segments", params["message"])
+	}
+	first := segs[0].(map[string]any)
+	if first["type"] != "reply" || first["data"].(map[string]any)["id"] != "555" {
+		t.Errorf("first segment = %#v, want reply id 555", first)
+	}
+	second := segs[1].(map[string]any)
+	if second["type"] != "text" || second["data"].(map[string]any)["text"] != "hello" {
+		t.Errorf("second segment = %#v, want text hello", second)
+	}
+
+	// Plain Send in a group → untouched string, no reply.
+	if err := p.Send(nil, rctx, "side"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	req = awaitMap(t, captured)
+	if got := req["params"].(map[string]any)["message"]; got != "side" {
+		t.Errorf("Send message = %#v, want plain string", got)
+	}
+
+	// Final reply without a message ID (reconstructed ctx) → plain string.
+	if err := p.SendFinalReply(nil, &replyContext{messageType: "group", groupID: 100}, "x"); err != nil {
+		t.Fatalf("SendFinalReply no id: %v", err)
+	}
+	req = awaitMap(t, captured)
+	if got := req["params"].(map[string]any)["message"]; got != "x" {
+		t.Errorf("no-id final message = %#v, want plain string", got)
+	}
+
+	// Private final reply → plain string.
+	if err := p.SendFinalReply(nil, &replyContext{messageType: "private", userID: 7, messageID: 9}, "dm"); err != nil {
+		t.Fatalf("SendFinalReply private: %v", err)
+	}
+	req = awaitMap(t, captured)
+	if got := req["params"].(map[string]any)["message"]; got != "dm" {
+		t.Errorf("private final message = %#v, want plain string", got)
+	}
+}
+
+func awaitMap(t *testing.T, ch <-chan map[string]any) map[string]any {
+	t.Helper()
+	select {
+	case m := <-ch:
+		return m
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for API request")
+		return nil
+	}
+}

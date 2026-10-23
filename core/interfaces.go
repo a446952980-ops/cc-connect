@@ -242,6 +242,20 @@ type AtMentionSender interface {
 	ReplyWithAt(ctx context.Context, replyCtx any, content string, atUsers []string, atAll bool) error
 }
 
+// FinalReplySender is an optional interface for platforms that want to treat the
+// agent's final answer of a turn differently from side messages (progress,
+// thinking, `cc-connect send`), e.g. QQ quotes the triggering message.
+type FinalReplySender interface {
+	SendFinalReply(ctx context.Context, replyCtx any, content string) error
+}
+
+// PlatformActionSender is an optional interface for platforms that can run
+// small non-message actions (poke, typing status, ...) on behalf of an agent,
+// executed in order with the platform's outgoing messages.
+type PlatformActionSender interface {
+	DoAction(ctx context.Context, replyCtx any, action string, params map[string]any) (map[string]any, error)
+}
+
 // ImageSender is an optional interface for platforms that support sending images.
 type ImageSender interface {
 	SendImage(ctx context.Context, replyCtx any, img ImageAttachment) error
